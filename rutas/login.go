@@ -5,7 +5,7 @@ import (
     "encoding/json"
     "net/http"
     "github.com/WolfSlayer04/logica_tiendaenlina/db"
-    "golang.org/x/crypto/bcrypt" // Agregamos bcrypt
+    "golang.org/x/crypto/bcrypt"
 )
 
 type LoginRequest struct {
@@ -45,10 +45,16 @@ type AdminUsuario struct {
     Clave       string          `json:"-"`
 }
 
-// Función auxiliar para verificar contraseñas
-func verificarContraseña(claveHash string, claveIntento string) bool {
-    err := bcrypt.CompareHashAndPassword([]byte(claveHash), []byte(claveIntento))
-    return err == nil
+// Función auxiliar para verificar contraseñas (soporta hash y texto plano)
+func verificarContraseña(claveAlmacenada, claveIntento string) bool {
+    // Intentar comparar como hash bcrypt
+    err := bcrypt.CompareHashAndPassword([]byte(claveAlmacenada), []byte(claveIntento))
+    if err == nil {
+        // Coincide con hash
+        return true
+    }
+    // Si falla, comparar como texto plano (para usuarios antiguos)
+    return claveAlmacenada == claveIntento
 }
 
 func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
@@ -80,12 +86,12 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
                 return
             }
 
-            // Validar clave admin (sin encriptar)
-            if admin.Clave != req.Clave {
+            // Validar clave admin (hash o texto plano)
+            if !verificarContraseña(admin.Clave, req.Clave) {
                 writeErrorResponse1(w, http.StatusUnauthorized, "Usuario o contraseña incorrectos", "")
                 return
             }
-            
+
             admin.Clave = ""
             writeSuccessResponse1(w, "Login exitoso (admin)", map[string]interface{}{
                 "admin": admin,
@@ -96,7 +102,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
             return
         }
 
-        // Validación de contraseña para usuario normal usando bcrypt
+        // Validación de contraseña para usuario normal (hash o texto plano)
         if !verificarContraseña(u.Clave, req.Clave) {
             writeErrorResponse1(w, http.StatusUnauthorized, "Usuario o contraseña incorrectos", "")
             return
