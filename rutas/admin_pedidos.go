@@ -650,3 +650,241 @@ func AdminGetPedidoByID(dbConn *db.DBConnection) http.HandlerFunc {
 		})
 	}
 }
+
+// ----------- OBTENER LISTA DE PEDIDOS CON PAGINACIÓN -----------
+
+func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Leer parámetros de paginación
+		pageStr := r.URL.Query().Get("page")
+		perPageStr := r.URL.Query().Get("perPage")
+		page, err := strconv.Atoi(pageStr)
+		if err != nil || page < 1 {
+			page = 1
+		}
+		perPage, err := strconv.Atoi(perPageStr)
+		if err != nil || perPage < 1 {
+			perPage = 10 // valor por defecto
+		}
+		offset := (page - 1) * perPage
+
+		// Consulta para contar el total de pedidos
+		var totalPedidos int
+		err = dbConn.Local.QueryRow("SELECT COUNT(*) FROM pedidos").Scan(&totalPedidos)
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, "Error al contar pedidos", err.Error())
+			return
+		}
+
+		rows, err := dbConn.Local.Query(`
+			SELECT 
+				p.id_pedido, p.clave_unica, p.id_usuario, p.id_tienda, p.id_sucursal, p.fecha_creacion, p.fecha_entrega,
+				p.subtotal, p.descuento, p.iva, p.ieps, p.total, p.id_metodo_pago, p.referencia_pago, p.direccion_entrega,
+				p.colonia_entrega, p.cp_entrega, p.ciudad_entrega, p.estado_entrega, p.latitud_entrega, p.longitud_entrega,
+				p.estatus, p.comentarios, p.origen_pedido, p.id_lista_precio,
+				u.nombre_completo as nombre_usuario,
+				s.sucursal as nombre_sucursal
+			FROM pedidos p
+			LEFT JOIN usuarios u ON u.id_usuario = p.id_usuario
+			LEFT JOIN adm_sucursales s ON s.idsucursal = p.id_sucursal
+			ORDER BY p.id_pedido DESC
+			LIMIT ? OFFSET ?
+		`, perPage, offset)
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, "Error al consultar pedidos", err.Error())
+			return
+		}
+		defer rows.Close()
+
+		var pedidos []map[string]interface{}
+		for rows.Next() {
+			var p struct {
+				IDPedido         int64
+				ClaveUnica       string
+				IDUsuario        int
+				IDTienda         int
+				IDSucursal       int
+				FechaCreacion    string
+				FechaEntrega     sql.NullString
+				Subtotal         float64
+				Descuento        float64
+				IVA              float64
+				IEPS             float64
+				Total            float64
+				IDMetodoPago     int
+				ReferenciaPago   sql.NullString
+				DireccionEntrega string
+				ColoniaEntrega   string
+				CPEntrega        string
+				CiudadEntrega    string
+				EstadoEntrega    string
+				LatitudEntrega   sql.NullFloat64
+				LongitudEntrega  sql.NullFloat64
+				Estatus          string
+				Comentarios      sql.NullString
+				OrigenPedido     string
+				IDListaPrecio    int
+				NombreUsuario    sql.NullString
+				NombreSucursal   sql.NullString
+			}
+			err := rows.Scan(
+				&p.IDPedido,
+				&p.ClaveUnica,
+				&p.IDUsuario,
+				&p.IDTienda,
+				&p.IDSucursal,
+				&p.FechaCreacion,
+				&p.FechaEntrega,
+				&p.Subtotal,
+				&p.Descuento,
+				&p.IVA,
+				&p.IEPS,
+				&p.Total,
+				&p.IDMetodoPago,
+				&p.ReferenciaPago,
+				&p.DireccionEntrega,
+				&p.ColoniaEntrega,
+				&p.CPEntrega,
+				&p.CiudadEntrega,
+				&p.EstadoEntrega,
+				&p.LatitudEntrega,
+				&p.LongitudEntrega,
+				&p.Estatus,
+				&p.Comentarios,
+				&p.OrigenPedido,
+				&p.IDListaPrecio,
+				&p.NombreUsuario,
+				&p.NombreSucursal,
+			)
+			if err != nil {
+				writeErrorResponse(w, http.StatusInternalServerError, "Error al leer pedido", err.Error())
+				return
+			}
+
+			pedidoMap := map[string]interface{}{
+				"id_pedido":         p.IDPedido,
+				"clave_unica":       p.ClaveUnica,
+				"id_usuario":        p.IDUsuario,
+				"id_tienda":         p.IDTienda,
+				"id_sucursal":       p.IDSucursal,
+				"fecha_creacion":    p.FechaCreacion,
+				"fecha_entrega":     NullToStr(p.FechaEntrega),
+				"subtotal":          p.Subtotal,
+				"descuento":         p.Descuento,
+				"iva":               p.IVA,
+				"ieps":              p.IEPS,
+				"total":             p.Total,
+				"id_metodo_pago":    p.IDMetodoPago,
+				"referencia_pago":   NullToStr(p.ReferenciaPago),
+				"direccion_entrega": p.DireccionEntrega,
+				"colonia_entrega":   p.ColoniaEntrega,
+				"cp_entrega":        p.CPEntrega,
+				"ciudad_entrega":    p.CiudadEntrega,
+				"estado_entrega":    p.EstadoEntrega,
+				"latitud_entrega":   NullFloatToPtr(p.LatitudEntrega),
+				"longitud_entrega":  NullFloatToPtr(p.LongitudEntrega),
+				"estatus":           p.Estatus,
+				"comentarios":       NullToStr(p.Comentarios),
+				"origen_pedido":     p.OrigenPedido,
+				"id_lista_precio":   p.IDListaPrecio,
+				"nombre_usuario":    NullToStr(p.NombreUsuario),
+				"nombre_sucursal":   NullToStr(p.NombreSucursal),
+			}
+
+			detRows, err := dbConn.Local.Query(`
+				SELECT id_detalle, id_pedido, id_producto, clave_producto, descripcion, unidad, cantidad, precio_unitario,
+				       porcentaje_descuento, importe_descuento, subtotal, importe_iva, importe_ieps, total,
+				       latitud_entrega, longitud_entrega, estatus, comentarios, fecha_registro
+				FROM detalle_pedidos
+				WHERE id_pedido = ?
+			`, p.IDPedido)
+			if err != nil {
+				writeErrorResponse(w, http.StatusInternalServerError, "Error al consultar detalles", err.Error())
+				return
+			}
+			var detalles []map[string]interface{}
+			for detRows.Next() {
+				var d struct {
+					IDDetalle           int64
+					IDPedido            int64
+					IDProducto          int64
+					ClaveProducto       string
+					Descripcion         string
+					Unidad              string
+					Cantidad            float64
+					PrecioUnitario      float64
+					PorcentajeDescuento float64
+					ImporteDescuento    float64
+					Subtotal            float64
+					ImporteIVA          float64
+					ImporteIEPS         float64
+					Total               float64
+					LatitudEntrega      sql.NullFloat64
+					LongitudEntrega     sql.NullFloat64
+					Estatus             string
+					Comentarios         sql.NullString
+					FechaRegistro       sql.NullString
+				}
+				_ = detRows.Scan(
+					&d.IDDetalle,
+					&d.IDPedido,
+					&d.IDProducto,
+					&d.ClaveProducto,
+					&d.Descripcion,
+					&d.Unidad,
+					&d.Cantidad,
+					&d.PrecioUnitario,
+					&d.PorcentajeDescuento,
+					&d.ImporteDescuento,
+					&d.Subtotal,
+					&d.ImporteIVA,
+					&d.ImporteIEPS,
+					&d.Total,
+					&d.LatitudEntrega,
+					&d.LongitudEntrega,
+					&d.Estatus,
+					&d.Comentarios,
+					&d.FechaRegistro,
+				)
+				fechaRegistroStr := ""
+				if d.FechaRegistro.Valid {
+					fechaRegistroStr = d.FechaRegistro.String
+				}
+				detalles = append(detalles, map[string]interface{}{
+					"id_detalle":           d.IDDetalle,
+					"id_pedido":            d.IDPedido,
+					"id_producto":          d.IDProducto,
+					"clave_producto":       d.ClaveProducto,
+					"descripcion":          d.Descripcion,
+					"unidad":               d.Unidad,
+					"cantidad":             d.Cantidad,
+					"precio_unitario":      d.PrecioUnitario,
+					"porcentaje_descuento": d.PorcentajeDescuento,
+					"importe_descuento":    d.ImporteDescuento,
+					"subtotal":             d.Subtotal,
+					"importe_iva":          d.ImporteIVA,
+					"importe_ieps":         d.ImporteIEPS,
+					"total":                d.Total,
+					"latitud_entrega":      NullFloatToPtr(d.LatitudEntrega),
+					"longitud_entrega":     NullFloatToPtr(d.LongitudEntrega),
+					"estatus":              d.Estatus,
+					"comentarios":          NullToStr(d.Comentarios),
+					"fecha_registro":       fechaRegistroStr,
+				})
+			}
+			detRows.Close()
+
+			pedidos = append(pedidos, map[string]interface{}{
+				"pedido":   pedidoMap,
+				"detalles": detalles,
+			})
+		}
+		// Respuesta incluye pedidos, total y página actual
+		writeSuccessResponse(w, "Pedidos obtenidos correctamente", map[string]interface{}{
+			"pedidos": pedidos,
+			"total":   totalPedidos,
+			"page":    page,
+			"perPage": perPage,
+		})
+	}
+}

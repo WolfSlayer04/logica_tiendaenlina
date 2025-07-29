@@ -48,7 +48,6 @@ func main() {
 
 	fmt.Printf("Servidor corriendo en http://0.0.0.0:%s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
-
 }
 
 func setupRoutes(r *mux.Router, dbConn *db.DBConnection) {
@@ -77,7 +76,8 @@ func setupRoutes(r *mux.Router, dbConn *db.DBConnection) {
 	r.HandleFunc("/api/carrito/actualizar", rutas.UpdateCartItem(dbConn)).Methods("PUT")
 	// Rutas para pedidos
 	r.HandleFunc("/api/pedidos", rutas.CreatePedido(dbConn)).Methods("POST")
-	r.HandleFunc("/api/pedidos", rutas.AdminGetPedidosConDetalles(dbConn)).Methods("GET")
+	// ------- ACTUALIZA: Utiliza la versión paginada para GET de pedidos -------
+	r.HandleFunc("/api/pedidos", rutas.AdminGetPedidosConDetallesPaginado(dbConn)).Methods("GET")
 	r.HandleFunc("/api/pedidos/usuario", rutas.GetPedidosByUsuario(dbConn)).Methods("GET")
 	// Usuarios
 	r.HandleFunc("/api/usuarios", rutas.GetUsuarios(dbConn)).Methods("GET")
