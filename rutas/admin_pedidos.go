@@ -38,8 +38,6 @@ type DetallesUpdateRequest struct {
 	Detalles []DetallePedidoUpdate `json:"detalles"`
 }
 
-
-
 // ----------- ASIGNAR/CAMBIAR SUCURSAL -----------
 
 func AdminActualizarSucursalPedido(dbConn *db.DBConnection) http.HandlerFunc {
@@ -285,7 +283,7 @@ func AdminGetPedidosConDetalles(dbConn *db.DBConnection) http.HandlerFunc {
 				NombreUsuario    sql.NullString
 				NombreSucursal   sql.NullString
 			}
-			
+
 			// CORRECCIÓN: Usar sql.NullString para las columnas que pueden ser NULL
 			err := rows.Scan(
 				&p.IDPedido,
@@ -348,8 +346,8 @@ func AdminGetPedidosConDetalles(dbConn *db.DBConnection) http.HandlerFunc {
 				"comentarios":       NullToStr(p.Comentarios),
 				"origen_pedido":     p.OrigenPedido,
 				"id_lista_precio":   p.IDListaPrecio,
-				"nombre_usuario":    NullToStr(p.NombreUsuario),    // CORRECCIÓN: Usar NullToStr
-				"nombre_sucursal":   NullToStr(p.NombreSucursal),   // CORRECCIÓN: Usar NullToStr
+				"nombre_usuario":    NullToStr(p.NombreUsuario),  // CORRECCIÓN: Usar NullToStr
+				"nombre_sucursal":   NullToStr(p.NombreSucursal), // CORRECCIÓN: Usar NullToStr
 			}
 
 			detRows, err := dbConn.Local.Query(`
@@ -653,9 +651,11 @@ func AdminGetPedidoByID(dbConn *db.DBConnection) http.HandlerFunc {
 
 // ----------- OBTENER LISTA DE PEDIDOS CON PAGINACIÓN -----------
 
+// ----------- OBTENER LISTA DE PEDIDOS CON PAGINACIÓN Y FILTROS -----------
+
 func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Leer parámetros de paginación
+		// Parámetros de paginación
 		pageStr := r.URL.Query().Get("page")
 		perPageStr := r.URL.Query().Get("perPage")
 		page, err := strconv.Atoi(pageStr)
@@ -664,19 +664,49 @@ func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFun
 		}
 		perPage, err := strconv.Atoi(perPageStr)
 		if err != nil || perPage < 1 {
-			perPage = 10 // valor por defecto
+			perPage = 10
 		}
 		offset := (page - 1) * perPage
 
-		// Consulta para contar el total de pedidos
+		// Parámetros de filtro
+		estatus := r.URL.Query().Get("estatus")
+		sucursal := r.URL.Query().Get("sucursal")
+		busqueda := r.URL.Query().Get("busqueda")
+
+		// WHERE dinámico
+		where := " WHERE 1=1 "
+		args := []interface{}{}
+
+		if estatus != "" {
+			where += " AND p.estatus = ? "
+			args = append(args, estatus)
+		}
+		if sucursal != "" {
+			where += " AND s.sucursal = ? "
+			args = append(args, sucursal)
+		}
+		if busqueda != "" {
+			like := "%" + busqueda + "%"
+			where += " AND (CAST(p.id_pedido AS CHAR) LIKE ? OR u.nombre_completo LIKE ? OR s.sucursal LIKE ?) "
+			args = append(args, like, like, like)
+		}
+
+		// Consulta para contar el total filtrado
+		countQuery := `
+			SELECT COUNT(*) 
+			FROM pedidos p
+			LEFT JOIN usuarios u ON u.id_usuario = p.id_usuario
+			LEFT JOIN adm_sucursales s ON s.idsucursal = p.id_sucursal
+			` + where
 		var totalPedidos int
-		err = dbConn.Local.QueryRow("SELECT COUNT(*) FROM pedidos").Scan(&totalPedidos)
+		err = dbConn.Local.QueryRow(countQuery, args...).Scan(&totalPedidos)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, "Error al contar pedidos", err.Error())
 			return
 		}
 
-		rows, err := dbConn.Local.Query(`
+		// Consulta principal con paginación y filtros
+		query := `
 			SELECT 
 				p.id_pedido, p.clave_unica, p.id_usuario, p.id_tienda, p.id_sucursal, p.fecha_creacion, p.fecha_entrega,
 				p.subtotal, p.descuento, p.iva, p.ieps, p.total, p.id_metodo_pago, p.referencia_pago, p.direccion_entrega,
@@ -687,9 +717,12 @@ func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFun
 			FROM pedidos p
 			LEFT JOIN usuarios u ON u.id_usuario = p.id_usuario
 			LEFT JOIN adm_sucursales s ON s.idsucursal = p.id_sucursal
+			` + where + `
 			ORDER BY p.id_pedido DESC
 			LIMIT ? OFFSET ?
-		`, perPage, offset)
+		`
+		argsWithLimit := append(args, perPage, offset)
+		rows, err := dbConn.Local.Query(query, argsWithLimit...)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, "Error al consultar pedidos", err.Error())
 			return
