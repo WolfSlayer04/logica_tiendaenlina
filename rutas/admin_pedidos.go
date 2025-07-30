@@ -649,9 +649,7 @@ func AdminGetPedidoByID(dbConn *db.DBConnection) http.HandlerFunc {
 	}
 }
 
-// ----------- OBTENER LISTA DE PEDIDOS CON PAGINACIÓN -----------
 
-// ----------- OBTENER LISTA DE PEDIDOS CON PAGINACIÓN Y FILTROS -----------
 
 func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -686,9 +684,20 @@ func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFun
 			args = append(args, sucursal)
 		}
 		if busqueda != "" {
-			like := "%" + busqueda + "%"
-			where += " AND (CAST(p.id_pedido AS CHAR) LIKE ? OR u.nombre_completo LIKE ? OR s.sucursal LIKE ?) "
-			args = append(args, like, like, like)
+			where += " AND ("
+			// MATCH ... AGAINST full-text search en campos de texto
+			where += `
+				MATCH(u.nombre_completo) AGAINST (? IN NATURAL LANGUAGE MODE)
+				OR MATCH(s.sucursal) AGAINST (? IN NATURAL LANGUAGE MODE)
+				OR MATCH(p.clave_unica) AGAINST (? IN NATURAL LANGUAGE MODE)
+			`
+			args = append(args, busqueda, busqueda, busqueda)
+			// Si la búsqueda es numérica, buscar también por id_pedido
+			if esNumero(busqueda) {
+				where += " OR p.id_pedido = ? "
+				args = append(args, busqueda)
+			}
+			where += ")"
 		}
 
 		// Consulta para contar el total filtrado
@@ -858,7 +867,7 @@ func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFun
 					Comentarios         sql.NullString
 					FechaRegistro       sql.NullString
 				}
-				_ = detRows.Scan(
+				err := detRows.Scan(
 					&d.IDDetalle,
 					&d.IDPedido,
 					&d.IDProducto,
@@ -879,6 +888,10 @@ func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFun
 					&d.Comentarios,
 					&d.FechaRegistro,
 				)
+				if err != nil {
+					writeErrorResponse(w, http.StatusInternalServerError, "Error al leer detalle de pedido", err.Error())
+					return
+				}
 				fechaRegistroStr := ""
 				if d.FechaRegistro.Valid {
 					fechaRegistroStr = d.FechaRegistro.String
@@ -920,4 +933,11 @@ func AdminGetPedidosConDetallesPaginado(dbConn *db.DBConnection) http.HandlerFun
 			"perPage": perPage,
 		})
 	}
+}
+
+
+// esNumero valida si una cadena es un número
+func esNumero(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
 }
