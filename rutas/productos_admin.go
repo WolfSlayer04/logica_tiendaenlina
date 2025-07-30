@@ -133,19 +133,13 @@ type ProductoDBConIVA struct {
 // AddProducto mejorado: solo incluye los campos que realmente vienen en el input (no nulos)
 func AddProducto(dbConn *db.DBConnection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		
-
 		var input ProductoInput
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			
 			http.Error(w, "JSON inválido", http.StatusBadRequest)
 			return
 		}
 
-		
-
 		if input.IDEmpresa == 0 || input.Descripcion == "" || input.Estatus == "" {
-			
 			http.Error(w, "Faltan campos obligatorios", http.StatusBadRequest)
 			return
 		}
@@ -209,13 +203,11 @@ func AddProducto(dbConn *db.DBConnection) http.HandlerFunc {
 		)
 		res, err := dbConn.Local.Exec(query, args...)
 		if err != nil {
-			
 			http.Error(w, "Error al insertar producto: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		insertedID, _ := res.LastInsertId()
-		
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"idproducto": insertedID,
@@ -348,7 +340,7 @@ func EditProducto(dbConn *db.DBConnection) http.HandlerFunc {
 	}
 }
 
-// GetEstatusProductos retorna productos filtrados por estatus (paginado, incluye IVA, precio final y nombre de empresa)
+// GetEstatusProductos mejorado: paginación y búsqueda
 func GetEstatusProductos(dbConn *db.DBConnection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -358,6 +350,8 @@ func GetEstatusProductos(dbConn *db.DBConnection) http.HandlerFunc {
 			http.Error(w, "Falta el parámetro 'estatus'", http.StatusBadRequest)
 			return
 		}
+
+		busqueda := r.URL.Query().Get("busqueda")
 
 		pageStr := r.URL.Query().Get("page")
 		limitStr := r.URL.Query().Get("limit")
@@ -371,10 +365,25 @@ func GetEstatusProductos(dbConn *db.DBConnection) http.HandlerFunc {
 		}
 		offset := (page - 1) * limit
 
-		// Total para paginación
+		// WHERE dinámico
+		where := " WHERE p.estatus = ?"
+		args := []interface{}{estatus}
+		if busqueda != "" {
+			// Puedes usar MATCH ... AGAINST si tienes FULLTEXT, o LIKE si no
+			// Aquí usamos LIKE para mayor compatibilidad
+			where += ` AND (
+				p.descripcion LIKE ?
+				OR p.clave LIKE ?
+				OR p.cod_barras LIKE ?
+			)`
+			like := "%" + busqueda + "%"
+			args = append(args, like, like, like)
+		}
+
+		// Total para paginación (filtrado)
+		countQuery := "SELECT COUNT(*) FROM crm_productos p " + where
 		var total int
-		countQuery := "SELECT COUNT(*) FROM crm_productos WHERE estatus = ?"
-		if err := dbConn.Local.QueryRow(countQuery, estatus).Scan(&total); err != nil {
+		if err := dbConn.Local.QueryRow(countQuery, args...).Scan(&total); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -393,9 +402,10 @@ func GetEstatusProductos(dbConn *db.DBConnection) http.HandlerFunc {
 			FROM crm_productos p
 			LEFT JOIN adm_empresas e ON p.idempresa = e.idempresa
 			LEFT JOIN crm_impuestos i ON p.idiva = i.idiva
-			WHERE p.estatus = ?
+			` + where + `
 			LIMIT ? OFFSET ?`
-		rows, err := dbConn.Local.Query(query, estatus, limit, offset)
+		argsWithLimit := append(args, limit, offset)
+		rows, err := dbConn.Local.Query(query, argsWithLimit...)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -433,6 +443,8 @@ func GetEstatusProductos(dbConn *db.DBConnection) http.HandlerFunc {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"productos": productos,
 			"total":     total,
+			"page":      page,
+			"limit":     limit,
 		})
 	}
 }
