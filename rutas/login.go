@@ -6,7 +6,13 @@ import (
     "net/http"
     "github.com/WolfSlayer04/logica_tiendaenlina/db"
     "golang.org/x/crypto/bcrypt"
+    "github.com/golang-jwt/jwt/v5"
+    "crypto/rand"
+    "encoding/base64"
+    "time"
 )
+
+var jwtKey = []byte("TU_CLAVE_SECRETA") // Reemplaza por una clave segura
 
 type LoginRequest struct {
     Correo string `json:"correo"`
@@ -45,16 +51,91 @@ type AdminUsuario struct {
     Clave       string          `json:"-"`
 }
 
-// Función auxiliar para verificar contraseñas (soporta hash y texto plano)
+// Verifica contraseña (hash y texto plano para compatibilidad)
 func verificarContraseña(claveAlmacenada, claveIntento string) bool {
-    // Intentar comparar como hash bcrypt
     err := bcrypt.CompareHashAndPassword([]byte(claveAlmacenada), []byte(claveIntento))
     if err == nil {
-        // Coincide con hash
         return true
     }
-    // Si falla, comparar como texto plano (para usuarios antiguos)
     return claveAlmacenada == claveIntento
+}
+
+// Genera Access y Refresh Token usando zona horaria de Yucatán
+func generarTokens(id int, tipo string, correo string) (string, string, error) {
+    loc, err := time.LoadLocation("America/Merida")
+    if err != nil {
+        loc = time.UTC
+    }
+    now := time.Now().In(loc)
+    midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+
+    claims := jwt.MapClaims{
+        "id":    id,
+        "tipo":  tipo,
+        "correo": correo,
+        "exp":   midnight.Unix(),
+    }
+    accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+    accessString, err := accessToken.SignedString(jwtKey)
+    if err != nil {
+        return "", "", err
+    }
+    refreshBytes := make([]byte, 32)
+    _, err = rand.Read(refreshBytes)
+    if err != nil {
+        return "", "", err
+    }
+    refreshString := base64.URLEncoding.EncodeToString(refreshBytes)
+    return accessString, refreshString, nil
+}
+
+// Guarda el refresh token, asegurando que las fechas sean hora local en string
+func guardarRefreshToken(dbc *db.DBConnection, userID int, tipoUsuario string, refreshToken, userAgent, ip string) error {
+    loc, err := time.LoadLocation("America/Merida")
+    if err != nil {
+        loc = time.UTC
+    }
+    now := time.Now().In(loc)
+    midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+    nowStr := now.Format("2006-01-02 15:04:05")
+    midnightStr := midnight.Format("2006-01-02 15:04:05")
+
+    tipo := tipoUsuario
+    if tipo != "A" && tipo != "C" {
+        if tipo == "admin" {
+            tipo = "A"
+        } else {
+            tipo = "C"
+        }
+    }
+    hash, err := bcrypt.GenerateFromPassword([]byte(refreshToken), bcrypt.DefaultCost)
+    if err != nil {
+        return err
+    }
+    _, err = dbc.Local.Exec(`
+        INSERT INTO refresh_tokens (usuario_id, tipo_usuario, token_hash, user_agent, ip_address, expiracion, ultimo_uso, estado)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'activo')
+    `, userID, tipo, string(hash), userAgent, ip, midnightStr, nowStr)
+    return err
+}
+
+func sesionActivaReciente(dbc *db.DBConnection, userID int) (bool, error) {
+    var ultimoUso time.Time
+    err := dbc.Local.QueryRow(`
+        SELECT ultimo_uso FROM refresh_tokens
+        WHERE usuario_id = ? AND estado = 'activo'
+        ORDER BY expiracion DESC LIMIT 1
+    `, userID).Scan(&ultimoUso)
+    if err == sql.ErrNoRows {
+        return false, nil
+    }
+    if err != nil {
+        return false, err
+    }
+    if time.Since(ultimoUso) < 15*time.Minute {
+        return true, nil
+    }
+    return false, nil
 }
 
 func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
@@ -65,15 +146,15 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
             return
         }
 
-        // 1. Intentar login como usuario normal
         var u db.Usuario
         query := `SELECT id_usuario, id_empresa, tipo_usuario, nombre_completo, correo, telefono, clave, estatus FROM usuarios WHERE correo = ? LIMIT 1`
         err := dbc.Local.QueryRow(query, req.Correo).Scan(
             &u.IDUsuario, &u.IDEmpresa, &u.TipoUsuario, &u.NombreCompleto, &u.Correo, &u.Telefono, &u.Clave, &u.Estatus,
         )
+        var tipoUsuario string
+        var admin AdminUsuario
+
         if err == sql.ErrNoRows {
-            // 2. Intentar login como admin
-            var admin AdminUsuario
             adminQuery := `SELECT idusuario, idperfil, permisos, tipo_usuario, correo, clave FROM admin_usuarios WHERE correo = ? LIMIT 1`
             adminErr := dbc.Local.QueryRow(adminQuery, req.Correo).Scan(
                 &admin.IDUsuario, &admin.IDPerfil, &admin.Permisos, &admin.TipoUsuario, &admin.Correo, &admin.Clave,
@@ -85,16 +166,36 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
                 writeErrorResponse1(w, http.StatusInternalServerError, "Error de base de datos (admin)", adminErr.Error())
                 return
             }
-
-            // Validar clave admin (hash o texto plano)
             if !verificarContraseña(admin.Clave, req.Clave) {
                 writeErrorResponse1(w, http.StatusUnauthorized, "Usuario o contraseña incorrectos", "")
                 return
             }
-
+            activo, err := sesionActivaReciente(dbc, admin.IDUsuario)
+            if err != nil {
+                writeErrorResponse1(w, http.StatusInternalServerError, "Error verificando sesión activa", err.Error())
+                return
+            }
+            if activo {
+                writeErrorResponse1(w, http.StatusConflict, "Sesión iniciada en otro equipo, espere o cierre sesión", "")
+                return
+            }
+            admin.TipoUsuario = "A"
+            accessToken, refreshToken, err := generarTokens(admin.IDUsuario, admin.TipoUsuario, admin.Correo)
+            if err != nil {
+                writeErrorResponse1(w, http.StatusInternalServerError, "Error generando tokens", err.Error())
+                return
+            }
+            userAgent := r.Header.Get("User-Agent")
+            ip := r.RemoteAddr
+            err = guardarRefreshToken(dbc, admin.IDUsuario, admin.TipoUsuario, refreshToken, userAgent, ip)
+            if err != nil {
+                writeErrorResponse1(w, http.StatusInternalServerError, "Error guardando refresh token", err.Error())
+                return
+            }
             admin.Clave = ""
             writeSuccessResponse1(w, "Login exitoso (admin)", map[string]interface{}{
                 "admin": admin,
+                "access_token": accessToken,
             })
             return
         } else if err != nil {
@@ -102,7 +203,6 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
             return
         }
 
-        // Validación de contraseña para usuario normal (hash o texto plano)
         if !verificarContraseña(u.Clave, req.Clave) {
             writeErrorResponse1(w, http.StatusUnauthorized, "Usuario o contraseña incorrectos", "")
             return
@@ -112,9 +212,19 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
             writeErrorResponse1(w, http.StatusUnauthorized, "Usuario inactivo o suspendido", "")
             return
         }
-        u.Clave = "" // no enviar clave al frontend
+        u.Clave = ""
+        tipoUsuario = "C"
 
-        // Consultar datos de tienda asociada al usuario (si existe), incluyendo geolocalización
+        activo, err := sesionActivaReciente(dbc, u.IDUsuario)
+        if err != nil {
+            writeErrorResponse1(w, http.StatusInternalServerError, "Error verificando sesión activa", err.Error())
+            return
+        }
+        if activo {
+            writeErrorResponse1(w, http.StatusConflict, "Sesión iniciada en otro equipo, espere o cierre sesión", "")
+            return
+        }
+
         var tienda struct {
             IDTienda     int     `json:"id_tienda"`
             NombreTienda string  `json:"nombre_tienda"`
@@ -150,10 +260,23 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
         tienda.LatitudUbic = db.NullToFloat(latPoint)
         tienda.LongitudUbic = db.NullToFloat(lonPoint)
 
-        // Devuelve ambos objetos (usuario y tienda) al frontend
+        accessToken, refreshToken, err := generarTokens(u.IDUsuario, tipoUsuario, u.Correo)
+        if err != nil {
+            writeErrorResponse1(w, http.StatusInternalServerError, "Error generando tokens", err.Error())
+            return
+        }
+        userAgent := r.Header.Get("User-Agent")
+        ip := r.RemoteAddr
+        err = guardarRefreshToken(dbc, u.IDUsuario, tipoUsuario, refreshToken, userAgent, ip)
+        if err != nil {
+            writeErrorResponse1(w, http.StatusInternalServerError, "Error guardando refresh token", err.Error())
+            return
+        }
+
         writeSuccessResponse1(w, "Login exitoso", map[string]interface{}{
             "usuario": u,
             "tienda":  tienda,
+            "access_token": accessToken,
         })
     }
 }
