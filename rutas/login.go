@@ -119,16 +119,25 @@ func guardarRefreshToken(dbc *db.DBConnection, userID int, tipoUsuario string, r
     return err
 }
 
+// Corregido: lee ultimo_uso como string y lo convierte a time.Time
 func sesionActivaReciente(dbc *db.DBConnection, userID int) (bool, error) {
-    var ultimoUso time.Time
+    var ultimoUsoStr sql.NullString
     err := dbc.Local.QueryRow(`
         SELECT ultimo_uso FROM refresh_tokens
         WHERE usuario_id = ? AND estado = 'activo'
         ORDER BY expiracion DESC LIMIT 1
-    `, userID).Scan(&ultimoUso)
+    `, userID).Scan(&ultimoUsoStr)
     if err == sql.ErrNoRows {
         return false, nil
     }
+    if err != nil {
+        return false, err
+    }
+    if !ultimoUsoStr.Valid || ultimoUsoStr.String == "" {
+        return false, nil
+    }
+    // Convierte string a time.Time
+    ultimoUso, err := time.Parse("2006-01-02 15:04:05", ultimoUsoStr.String)
     if err != nil {
         return false, err
     }

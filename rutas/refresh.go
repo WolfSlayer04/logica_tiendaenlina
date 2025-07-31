@@ -14,6 +14,9 @@ type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+// Genera Access y Refresh Token usando zona horaria de Yucatán
+
+// Valida refresh token
 func validarRefreshToken(dbc *db.DBConnection, refreshToken string) (tokenID int, userID int, tipoUsuario, correo string, err error) {
 	var (
 		id            int
@@ -21,7 +24,7 @@ func validarRefreshToken(dbc *db.DBConnection, refreshToken string) (tokenID int
 		tipo          string
 		correoUsuario string
 		tokenHash     string
-		expiracion    time.Time
+		expiracionStr sql.NullString
 	)
 	query := `SELECT id, usuario_id, tipo_usuario, token_hash, expiracion FROM refresh_tokens WHERE estado = 'activo'`
 	rows, err := dbc.Local.Query(query)
@@ -32,7 +35,7 @@ func validarRefreshToken(dbc *db.DBConnection, refreshToken string) (tokenID int
 
 	found := false
 	for rows.Next() {
-		err = rows.Scan(&tokenId, &id, &tipo, &tokenHash, &expiracion)
+		err = rows.Scan(&tokenId, &id, &tipo, &tokenHash, &expiracionStr)
 		if err != nil {
 			continue
 		}
@@ -43,6 +46,13 @@ func validarRefreshToken(dbc *db.DBConnection, refreshToken string) (tokenID int
 	}
 	if !found {
 		return 0, 0, "", "", sql.ErrNoRows
+	}
+	if !expiracionStr.Valid || expiracionStr.String == "" {
+		return 0, 0, "", "", sql.ErrNoRows
+	}
+	expiracion, err := time.Parse("2006-01-02 15:04:05", expiracionStr.String)
+	if err != nil {
+		return 0, 0, "", "", err
 	}
 	if time.Now().After(expiracion) {
 		return 0, 0, "", "", sql.ErrNoRows
@@ -81,15 +91,16 @@ func RefreshTokenEndpoint(dbc *db.DBConnection) http.HandlerFunc {
 			loc = time.UTC
 		}
 
-		// Verifica sesión activa reciente antes de renovar
-		var ultimoUso time.Time
+		// Verifica sesión activa reciente antes de renovar (lee como string y convierte)
+		var ultimoUsoStr sql.NullString
 		err = dbc.Local.QueryRow(`
             SELECT ultimo_uso FROM refresh_tokens
             WHERE id = ? AND estado = 'activo'
             LIMIT 1
-        `, tokenID).Scan(&ultimoUso)
-		if err == nil {
-			if time.Since(ultimoUso) < 15*time.Minute {
+        `, tokenID).Scan(&ultimoUsoStr)
+		if err == nil && ultimoUsoStr.Valid && ultimoUsoStr.String != "" {
+			ultimoUso, err := time.Parse("2006-01-02 15:04:05", ultimoUsoStr.String)
+			if err == nil && time.Since(ultimoUso) < 15*time.Minute {
 				writeErrorResponse1(w, http.StatusConflict, "Sesión iniciada en otro equipo, espere o cierre sesión", "")
 				return
 			}
