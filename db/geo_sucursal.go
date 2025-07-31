@@ -28,8 +28,7 @@ func SeActivoEstaAlerta(dbConn *DBConnection, base string, tipo_objeto string, i
 	}
 }
 
-// Las demás funciones no cambian, porque reciben *sql.DB, que ahora es la conexión única del singleton.
-
+// Valida si el punto está dentro de un círculo y calcula la distancia al centro
 func ValidaCirculo(db *sql.DB, idsucursal int, aviso string, latitud float64, longitud float64, radio float64) (bool, float64, error) {
 	var x1, y1 float64
 	query := `SELECT ST_X(punto) as latitud, ST_Y(punto) as longitud FROM adm_sucursales_ptos WHERE idsucursal = ? ORDER BY orden LIMIT 1`
@@ -49,6 +48,7 @@ func ValidaCirculo(db *sql.DB, idsucursal int, aviso string, latitud float64, lo
 	}
 }
 
+// Valida si el punto está dentro de un rectángulo y calcula la distancia al centro aproximado
 func ValidaRectangulo(db *sql.DB, idsucursal int, aviso string, latitud float64, longitud float64) (bool, float64, error) {
 	var lat1, lng1, lat2, lng2 float64
 	rows, err := db.Query(`SELECT ST_X(punto), ST_Y(punto) FROM adm_sucursales_ptos WHERE idsucursal = ? ORDER BY orden LIMIT 2`, idsucursal)
@@ -99,6 +99,7 @@ func ValidaRectangulo(db *sql.DB, idsucursal int, aviso string, latitud float64,
 	}
 }
 
+// Valida si el punto está dentro de un polígono y calcula la distancia al primer punto
 func ValidaPoligono(db *sql.DB, idsucursal int, aviso string, latitud float64, longitud float64) (bool, float64, error) {
 	rows, err := db.Query(`SELECT ST_X(punto), ST_Y(punto) FROM adm_sucursales_ptos WHERE idsucursal = ? ORDER BY orden`, idsucursal)
 	if err != nil {
@@ -156,4 +157,58 @@ func distance(lat1, lon1, lat2, lon2 float64) float64 {
 			math.Sin(dLon/2)*math.Sin(dLon/2)
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return R * c
+}
+
+// BuscarSucursalPorUbicacionConCobertura busca primero cobertura y si no, asigna la más cercana
+func BuscarSucursalPorUbicacionConCobertura(dbConn *DBConnection, base string, idEmpresa int, lat, lng float64) (idsucursal int, nombreSucursal string, err error) {
+	rows, err := dbConn.Local.Query(`
+        SELECT idsucursal, sucursal, tipo_objeto, radio
+        FROM adm_sucursales
+        WHERE idempresa = ? AND estatus = 'S'
+    `, idEmpresa)
+	if err != nil {
+		return 0, "", err
+	}
+	defer rows.Close()
+
+	var (
+		coberturaID    int
+		coberturaNombre string
+		coberturaDist  float64 = math.MaxFloat64
+		cercanoID      int
+		cercanoNombre  string
+		cercanoDist    float64 = math.MaxFloat64
+	)
+
+	for rows.Next() {
+		var id int
+		var nombre, tipoObjeto string
+		var radio float64
+		if err := rows.Scan(&id, &nombre, &tipoObjeto, &radio); err != nil {
+			continue
+		}
+		enCobertura, dist, err := SeActivoEstaAlerta(dbConn, base, tipoObjeto, id, "E", radio, lat, lng)
+		if err != nil {
+			continue
+		}
+		// Si está en cobertura, guarda la más cercana en cobertura
+		if enCobertura && dist < coberturaDist {
+			coberturaDist = dist
+			coberturaID = id
+			coberturaNombre = nombre
+		}
+		// Siempre guarda la sucursal más cercana, aunque no esté en cobertura
+		if dist < cercanoDist {
+			cercanoDist = dist
+			cercanoID = id
+			cercanoNombre = nombre
+		}
+	}
+	if coberturaID > 0 {
+		return coberturaID, coberturaNombre, nil
+	}
+	if cercanoID > 0 {
+		return cercanoID, cercanoNombre, nil
+	}
+	return 0, "", fmt.Errorf("No hay sucursales válidas")
 }

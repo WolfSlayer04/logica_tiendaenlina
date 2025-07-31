@@ -8,9 +8,10 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
-	"github.com/WolfSlayer04/logica_tiendaenlina/db"
 	"strings"
 	"time"
+
+	"github.com/WolfSlayer04/logica_tiendaenlina/db"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -246,10 +247,13 @@ func BuscarSucursalPorUbicacion(dbconn *db.DBConnection, idEmpresa int, lat, lng
 	defer rows.Close()
 
 	var (
-		bestID     int
-		bestNombre string
-		bestDist   float64 = math.MaxFloat64
-		found      bool
+		bestCoberturaID     int
+		bestCoberturaNombre string
+		bestCoberturaDist   float64 = math.MaxFloat64
+
+		bestCercanoID     int
+		bestCercanoNombre string
+		bestCercanoDist   float64 = math.MaxFloat64
 	)
 
 	for rows.Next() {
@@ -259,26 +263,36 @@ func BuscarSucursalPorUbicacion(dbconn *db.DBConnection, idEmpresa int, lat, lng
 		if err := rows.Scan(&id, &nombre, &tipoObjeto, &radio); err != nil {
 			continue
 		}
-		// Ajusta la llamada a SeActivoEstaAlerta
-		_, dist, err := db.SeActivoEstaAlerta(dbconn, tipoObjeto, nombre, id, "E", radio, lat, lng)
+		if tipoObjeto == "N" {
+			// Ignorar sucursales sin georreferencia
+			continue
+		}
+		enCobertura, dist, err := db.SeActivoEstaAlerta(dbconn, "local", tipoObjeto, id, "E", radio, lat, lng)
 		if err != nil {
 			continue
 		}
-		if dist == 0.0 {
-			continue
+		// Si está en cobertura, guarda la más cercana dentro de cobertura
+		if enCobertura && dist < bestCoberturaDist {
+			bestCoberturaDist = dist
+			bestCoberturaID = id
+			bestCoberturaNombre = nombre
 		}
-		if dist < bestDist {
-			bestDist = dist
-			bestID = id
-			bestNombre = nombre
-			found = true
+		// Siempre guarda la sucursal más cercana, aunque no esté en cobertura
+		if dist < bestCercanoDist {
+			bestCercanoDist = dist
+			bestCercanoID = id
+			bestCercanoNombre = nombre
 		}
 	}
-	if !found {
-		return 0, "", fmt.Errorf("No hay sucursales válidas")
+	if bestCoberturaID > 0 {
+		return bestCoberturaID, bestCoberturaNombre, nil
 	}
-	return bestID, bestNombre, nil
+	if bestCercanoID > 0 {
+		return bestCercanoID, bestCercanoNombre, nil
+	}
+	return 0, "", fmt.Errorf("No hay sucursales válidas")
 }
+
 // ---------------------------
 // OBTENER USUARIO Y TIENDA COMO EN LOGIN
 // ---------------------------
@@ -371,7 +385,7 @@ func RegistroUsuarioTienda(dbc *db.DBConnection) http.HandlerFunc {
 		idClienteRemoto, err := BuscaClienteRemoto(
 			dbc.Remote,
 			idSucursal,
-			claveAleatoria, // clave (6 dígitos) para remota
+			claveAleatoria,
 			req.Tienda.NombreTienda,
 			req.Tienda.RazonSocial,
 			req.Tienda.RFC,
@@ -388,14 +402,29 @@ func RegistroUsuarioTienda(dbc *db.DBConnection) http.HandlerFunc {
 			return
 		}
 
-		// --- Guardar usuario en local (clave_remota = claveAleatoria) ---
+		// ----------- INICIA TRANSACCIÓN -----------
+		tx, err := dbc.Local.Begin()
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, "Error al iniciar la transacción", err.Error())
+			return
+		}
+
+		defer func() {
+			if p := recover(); p != nil {
+				tx.Rollback()
+				writeErrorResponse(w, http.StatusInternalServerError, "Transacción abortada", fmt.Sprintf("%v", p))
+			}
+		}()
+
+		// --- Guardar usuario en local ---
 		fechaRegistro := time.Now()
-		userResult, err := dbc.Local.Exec(`
+		userResult, err := tx.Exec(`
             INSERT INTO usuarios (
-				id_empresa, tipo_usuario, nombre_completo, correo, telefono, clave, clave_remota, fecha_registro, estatus, requiere_cambiar_clave, id_remoto
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'activo', false, ?)
+                id_empresa, tipo_usuario, nombre_completo, correo, telefono, clave, clave_remota, fecha_registro, estatus, requiere_cambiar_clave, id_remoto
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'activo', false, ?)
         `, idEmpresa, req.Usuario.TipoUsuario, req.Usuario.NombreCompleto, req.Usuario.Correo, req.Usuario.Telefono, claveEncriptada, claveAleatoria, fechaRegistro, idClienteRemoto)
 		if err != nil {
+			tx.Rollback()
 			writeErrorResponse(w, http.StatusInternalServerError, "Error al crear usuario", err.Error())
 			return
 		}
@@ -403,12 +432,13 @@ func RegistroUsuarioTienda(dbc *db.DBConnection) http.HandlerFunc {
 
 		// --- Crear tienda en local ---
 		now := time.Now()
-		idsucursal, nombreSucursal, err := BuscarSucursalPorUbicacion(dbc, idEmpresa, req.Tienda.Latitud, req.Tienda.Longitud) // Corregido aquí
+		idsucursal, nombreSucursal, err := BuscarSucursalPorUbicacion(dbc, idEmpresa, req.Tienda.Latitud, req.Tienda.Longitud)
 		if err != nil {
+			tx.Rollback()
 			writeErrorResponse(w, http.StatusBadRequest, "No hay sucursal que cubra esa ubicación", "")
 			return
 		}
-		_, err = dbc.Local.Exec(`
+		_, err = tx.Exec(`
             INSERT INTO tiendas (
                 id_usuario, id_empresa, idsucursal, nombre_sucursal, nombre_tienda, razon_social, rfc, direccion, colonia, codigo_postal, ciudad, estado, pais, tipo_tienda, latitud, longitud, ubicacion, fecha_registro, ultima_actualizacion, estatus
             ) VALUES (
@@ -436,16 +466,49 @@ func RegistroUsuarioTienda(dbc *db.DBConnection) http.HandlerFunc {
 			now, now,
 		)
 		if err != nil {
+			tx.Rollback()
 			writeErrorResponse(w, http.StatusInternalServerError, "Error al crear tienda", err.Error())
 			return
 		}
 
-		// --- Respuesta igual a login: usuario y tienda ---
+		// --- Commitea la transacción ---
+		if err := tx.Commit(); err != nil {
+			tx.Rollback()
+			writeErrorResponse(w, http.StatusInternalServerError, "Error al confirmar la transacción", err.Error())
+			return
+		}
+
+		// --- Respuesta igual a login: usuario y tienda y access_token ---
 		loginData, err := GetUserAndTiendaForLogin(dbc.Local, idUsuario)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, "No se pudo obtener usuario y tienda para login automático", err.Error())
 			return
 		}
+
+		// --- Genera los tokens igual que el login ---
+		tipoUsuario := "C"
+		correo := ""
+		if usuario, ok := loginData["usuario"].(map[string]interface{}); ok {
+			if c, ok := usuario["correo"].(string); ok {
+				correo = c
+			}
+		}
+		accessToken, refreshToken, err := generarTokens(int(idUsuario), tipoUsuario, correo)
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, "Error generando tokens", err.Error())
+			return
+		}
+		userAgent := r.Header.Get("User-Agent")
+		ip := r.RemoteAddr
+		err = guardarRefreshToken(dbc, int(idUsuario), tipoUsuario, refreshToken, userAgent, ip)
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, "Error guardando refresh token", err.Error())
+			return
+		}
+
+		// --- Agrega access_token al objeto de respuesta ---
+		loginData["access_token"] = accessToken
+
 		writeSuccessResponse(w, "Usuario y tienda creados correctamente", loginData)
 	}
 }
