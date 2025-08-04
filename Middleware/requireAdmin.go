@@ -17,10 +17,11 @@ func RequireAdmin(next http.Handler) http.Handler {
         }
 
         tipoUsuario := r.Header.Get("X-Tipo-Usuario") // O donde guardes el tipo
-        if tipoUsuario != "admin" {
+        if tipoUsuario != "A" {
             http.Error(w, "No tienes permisos suficientes", http.StatusForbidden)
             return
         }
         next.ServeHTTP(w, r)
     })
 }
+
