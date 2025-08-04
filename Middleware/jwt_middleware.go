@@ -11,8 +11,8 @@ import (
 var jwtKey = []byte("TU_CLAVE_SECRETA")
 
 type Claims struct {
-    ID   int    `json:"id"`
-    Tipo string `json:"tipo"` // 'C' o 'A'
+    ID     int    `json:"id"`
+    Tipo   string `json:"tipo"` // 'C' o 'A'
     Correo string `json:"correo"`
     jwt.RegisteredClaims
 }
@@ -29,6 +29,16 @@ const (
 // Middleware JWT para rutas protegidas
 func JWTAuthMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // IMPORTANTE: Siempre incluir el header de CORS
+        w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization")
+        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        // Si es método OPTIONS, responder 200 y terminar (preflight CORS)
+        if r.Method == http.MethodOptions {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+
         authHeader := r.Header.Get("Authorization")
         if !strings.HasPrefix(authHeader, "Bearer ") {
             http.Error(w, "Token faltante o inválido", http.StatusUnauthorized)
