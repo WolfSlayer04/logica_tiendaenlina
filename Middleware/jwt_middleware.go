@@ -11,9 +11,10 @@ import (
 var jwtKey = []byte("TU_CLAVE_SECRETA")
 
 type Claims struct {
-    ID     int    `json:"id"`
-    Tipo   string `json:"tipo"` // 'C' o 'A'
-    Correo string `json:"correo"`
+    ID       int               `json:"id"`
+    Tipo     string            `json:"tipo"` // 'C' o 'A'
+    Correo   string            `json:"correo"`
+    Permisos map[string]bool   `json:"permisos"` // ← NUEVO
     jwt.RegisteredClaims
 }
 
@@ -21,9 +22,11 @@ type Claims struct {
 type contextKey string
 
 const (
-    ContextUserIDKey  contextKey = "userID"
-    ContextTipoKey    contextKey = "tipo"
-    ContextCorreoKey  contextKey = "correo"
+    ContextUserIDKey     contextKey = "userID"
+    ContextTipoKey       contextKey = "tipo"
+    ContextCorreoKey     contextKey = "correo"
+    ContextSoloLecturaKey contextKey = "solo_lectura"
+    ContextAccesoTotalKey contextKey = "acceso_total"
 )
 
 // Middleware JWT para rutas protegidas
@@ -58,16 +61,29 @@ func JWTAuthMiddleware(next http.Handler) http.Handler {
             return
         }
 
+        // Extraer flags de permisos seguros del JWT
+        soloLectura := false
+        accesoTotal := false
+        if claims.Permisos != nil {
+            if v, ok := claims.Permisos["soloLectura"]; ok {
+                soloLectura = v
+            }
+            if v, ok := claims.Permisos["accesoTotal"]; ok {
+                accesoTotal = v
+            }
+        }
+
         ctx := context.WithValue(r.Context(), ContextUserIDKey, claims.ID)
         ctx = context.WithValue(ctx, ContextTipoKey, claims.Tipo)
         ctx = context.WithValue(ctx, ContextCorreoKey, claims.Correo)
-
+        ctx = context.WithValue(ctx, ContextSoloLecturaKey, soloLectura)
+        ctx = context.WithValue(ctx, ContextAccesoTotalKey, accesoTotal)
         next.ServeHTTP(w, r.WithContext(ctx))
     })
 }
 
 // Recuperar datos del usuario autenticado desde el contexto
-func GetUserFromContext(r *http.Request) (id int, tipo string, correo string) {
+func GetUserFromContext(r *http.Request) (id int, tipo string, correo string, soloLectura bool, accesoTotal bool) {
     if val := r.Context().Value(ContextUserIDKey); val != nil {
         id, _ = val.(int)
     }
@@ -77,13 +93,19 @@ func GetUserFromContext(r *http.Request) (id int, tipo string, correo string) {
     if val := r.Context().Value(ContextCorreoKey); val != nil {
         correo, _ = val.(string)
     }
+    if val := r.Context().Value(ContextSoloLecturaKey); val != nil {
+        soloLectura, _ = val.(bool)
+    }
+    if val := r.Context().Value(ContextAccesoTotalKey); val != nil {
+        accesoTotal, _ = val.(bool)
+    }
     return
 }
 
 // Ejemplo de uso en tu handler
 func RutaProtegidaHandler(w http.ResponseWriter, r *http.Request) {
-    id, tipo, correo := GetUserFromContext(r)
+    id, tipo, correo, soloLectura, accesoTotal := GetUserFromContext(r)
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(http.StatusOK)
-    w.Write([]byte(fmt.Sprintf(`{"success":true,"id":%d,"tipo":"%s","correo":"%s"}`, id, tipo, correo)))
+    w.Write([]byte(fmt.Sprintf(`{"success":true,"id":%d,"tipo":"%s","correo":"%s","soloLectura":%t,"accesoTotal":%t}`, id, tipo, correo, soloLectura, accesoTotal)))
 }

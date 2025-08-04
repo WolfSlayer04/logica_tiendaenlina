@@ -5,8 +5,8 @@ import (
 )
 
 
-// RequireAdmin checks that the user is admin using JWT claims from context
-func RequireAdmin(next http.Handler) http.Handler {
+// RequireAdminPermisos: solo permite admins con los permisos correctos
+func RequireAdminPermisos(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         // CORS headers
         w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -17,12 +17,34 @@ func RequireAdmin(next http.Handler) http.Handler {
             return
         }
 
-        // Get tipo from context (set by JWT middleware)
-        tipoUsuario, ok := r.Context().Value(ContextTipoKey).(string)
-        if !ok || tipoUsuario != "A" {
+        // Leer tipo_usuario y permisos del contexto (puestos por JWT middleware)
+        tipoUsuario, tipoOk := r.Context().Value(ContextTipoKey).(string)
+        soloLectura, _ := r.Context().Value(ContextSoloLecturaKey).(bool)
+        accesoTotal, _ := r.Context().Value(ContextAccesoTotalKey).(bool)
+
+        // Solo admins pueden pasar
+        if !tipoOk || tipoUsuario != "A" {
             http.Error(w, "No tienes permisos suficientes", http.StatusForbidden)
             return
         }
-        next.ServeHTTP(w, r)
+
+        // Si tiene acceso total, puede cualquier método
+        if accesoTotal {
+            next.ServeHTTP(w, r)
+            return
+        }
+
+        // Si tiene soloLectura, solo puede GET/OPTIONS/HEAD
+        if soloLectura {
+            if r.Method == http.MethodGet || r.Method == http.MethodOptions || r.Method == http.MethodHead {
+                next.ServeHTTP(w, r)
+                return
+            }
+            http.Error(w, "Tu usuario es solo lectura, no puedes editar.", http.StatusForbidden)
+            return
+        }
+
+        // Si no tiene ninguno de los dos flags, bloquear (por seguridad)
+        http.Error(w, "No tienes permisos suficientes (falta accesoTotal o soloLectura)", http.StatusForbidden)
     })
 }

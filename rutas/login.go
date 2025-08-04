@@ -1,4 +1,4 @@
- package rutas
+package rutas
 
 import (
 	"crypto/rand"
@@ -46,7 +46,7 @@ func writeErrorResponse1(w http.ResponseWriter, status int, message string, deta
 type AdminUsuario struct {
 	IDUsuario   int             `json:"id_usuario"`
 	IDPerfil    int             `json:"id_perfil"`
-	Permisos    json.RawMessage `json:"permisos"`
+	Permisos    json.RawMessage `json:"permisos"` // JSON string
 	TipoUsuario string          `json:"tipo_usuario"`
 	Correo      string          `json:"correo"`
 	Clave       string          `json:"-"`
@@ -62,13 +62,13 @@ func verificarContraseña(claveAlmacenada, claveIntento string) bool {
 }
 
 // Genera access token (15 minutos) y refresh token (expira medianoche Yucatán)
+// Para usuarios normales (sin permisos especiales)
 func generarTokens(id int, tipo string, correo string) (string, string, int64, error) {
 	loc, err := time.LoadLocation("America/Merida")
 	if err != nil {
 		loc = time.UTC
 	}
 	now := time.Now().In(loc)
-	// Access token: expira en 15 minutos
 	accessExp := now.Add(15 * time.Minute).Unix()
 	accessClaims := jwt.MapClaims{
 		"id":     id,
@@ -81,7 +81,40 @@ func generarTokens(id int, tipo string, correo string) (string, string, int64, e
 	if err != nil {
 		return "", "", 0, err
 	}
-	// Refresh token: expira a medianoche de hoy
+	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+	refreshExp := midnight.Unix()
+	refreshBytes := make([]byte, 32)
+	_, err = rand.Read(refreshBytes)
+	if err != nil {
+		return "", "", 0, err
+	}
+	refreshString := base64.URLEncoding.EncodeToString(refreshBytes)
+	return accessString, refreshString, refreshExp, nil
+}
+
+// Genera access token y refresh token para admin,
+// incluyendo los permisos en el JWT
+func generarTokensConPermisos(id int, tipo string, correo string, permisos map[string]bool) (string, string, int64, error) {
+	loc, err := time.LoadLocation("America/Merida")
+	if err != nil {
+		loc = time.UTC
+	}
+	now := time.Now().In(loc)
+	accessExp := now.Add(15 * time.Minute).Unix()
+	accessClaims := jwt.MapClaims{
+		"id":     id,
+		"tipo":   tipo,
+		"correo": correo,
+		"exp":    accessExp,
+	}
+	if tipo == "A" && permisos != nil {
+		accessClaims["permisos"] = permisos
+	}
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	accessString, err := accessToken.SignedString(jwtKey)
+	if err != nil {
+		return "", "", 0, err
+	}
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
 	refreshExp := midnight.Unix()
 	refreshBytes := make([]byte, 32)
@@ -125,7 +158,6 @@ func guardarRefreshToken(dbc *db.DBConnection, userID int, tipoUsuario string, r
     `, userID, tipo).Scan(&idToken)
 
 	if err == sql.ErrNoRows {
-		// No existe, insertar nuevo registro
 		_, err = dbc.Local.Exec(`
             INSERT INTO refresh_tokens (usuario_id, tipo_usuario, token_hash, user_agent, ip_address, expiracion, ultimo_uso, estado)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'activo')
@@ -135,7 +167,6 @@ func guardarRefreshToken(dbc *db.DBConnection, userID int, tipoUsuario string, r
 		return err
 	}
 
-	// Existe, actualizar ese registro con el nuevo token y fechas
 	_, err = dbc.Local.Exec(`
         UPDATE refresh_tokens
         SET token_hash = ?, user_agent = ?, ip_address = ?, expiracion = ?, ultimo_uso = ?, estado = 'activo'
@@ -161,7 +192,6 @@ func sesionActivaReciente(dbc *db.DBConnection, userID int) (bool, error) {
 	if !ultimoUsoStr.Valid || ultimoUsoStr.String == "" {
 		return false, nil
 	}
-	// Convierte string a time.Time
 	ultimoUso, err := time.Parse("2006-01-02 15:04:05", ultimoUsoStr.String)
 	if err != nil {
 		return false, err
@@ -172,6 +202,7 @@ func sesionActivaReciente(dbc *db.DBConnection, userID int) (bool, error) {
 	return false, nil
 }
 
+// LoginUsuario es el handler del endpoint /api/login
 func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req LoginRequest
@@ -189,6 +220,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 		var admin AdminUsuario
 
 		if err == sql.ErrNoRows {
+			// Intentar login como admin
 			adminQuery := `SELECT idusuario, idperfil, permisos, tipo_usuario, correo, clave FROM admin_usuarios WHERE correo = ? LIMIT 1`
 			adminErr := dbc.Local.QueryRow(adminQuery, req.Correo).Scan(
 				&admin.IDUsuario, &admin.IDPerfil, &admin.Permisos, &admin.TipoUsuario, &admin.Correo, &admin.Clave,
@@ -214,7 +246,12 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 				return
 			}
 			admin.TipoUsuario = "A"
-			accessToken, refreshToken, refreshExp, err := generarTokens(admin.IDUsuario, admin.TipoUsuario, admin.Correo)
+
+			// Decodifica los permisos JSON
+			var permisos map[string]bool
+			_ = json.Unmarshal(admin.Permisos, &permisos)
+
+			accessToken, refreshToken, refreshExp, err := generarTokensConPermisos(admin.IDUsuario, admin.TipoUsuario, admin.Correo, permisos)
 			if err != nil {
 				writeErrorResponse1(w, http.StatusInternalServerError, "Error generando tokens", err.Error())
 				return
@@ -230,7 +267,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 			writeSuccessResponse1(w, "Login exitoso (admin)", map[string]interface{}{
 				"admin":        admin,
 				"access_token": accessToken,
-				// Si quieres devolver refresh_token, puedes agregarlo aquí
+				// Puedes devolver el refresh token si lo deseas
 				// "refresh_token": refreshToken,
 			})
 			return
@@ -239,11 +276,11 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 			return
 		}
 
+		// Login usuario normal
 		if !verificarContraseña(u.Clave, req.Clave) {
 			writeErrorResponse1(w, http.StatusUnauthorized, "Usuario o contraseña incorrectos", "")
 			return
 		}
-
 		if u.Estatus != "activo" {
 			writeErrorResponse1(w, http.StatusUnauthorized, "Usuario inactivo o suspendido", "")
 			return
@@ -313,7 +350,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 			"usuario":      u,
 			"tienda":       tienda,
 			"access_token": accessToken,
-			// Si quieres devolver refresh_token, puedes agregarlo aquí
+			// Puedes devolver el refresh token si lo deseas
 			// "refresh_token": refreshToken,
 		})
 	}
