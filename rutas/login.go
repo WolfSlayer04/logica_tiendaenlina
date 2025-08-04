@@ -104,12 +104,13 @@ func guardarRefreshToken(dbc *db.DBConnection, userID int, tipoUsuario string, r
 	midnight := time.Unix(refreshExp, 0).In(loc)
 	midnightStr := midnight.Format("2006-01-02 15:04:05")
 
+	// Siempre usa "admin" o "cliente"
 	tipo := tipoUsuario
-	if tipo != "A" && tipo != "C" {
-		if tipo == "admin" {
-			tipo = "A"
+	if tipo != "admin" && tipo != "cliente" {
+		if tipo == "A" {
+			tipo = "admin"
 		} else {
-			tipo = "C"
+			tipo = "cliente"
 		}
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(refreshToken), bcrypt.DefaultCost)
@@ -189,6 +190,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 		var admin AdminUsuario
 
 		if err == sql.ErrNoRows {
+			// --- ADMIN LOGIN ---
 			adminQuery := `SELECT idusuario, idperfil, permisos, tipo_usuario, correo, clave FROM admin_usuarios WHERE correo = ? LIMIT 1`
 			adminErr := dbc.Local.QueryRow(adminQuery, req.Correo).Scan(
 				&admin.IDUsuario, &admin.IDPerfil, &admin.Permisos, &admin.TipoUsuario, &admin.Correo, &admin.Clave,
@@ -213,7 +215,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 				writeErrorResponse1(w, http.StatusConflict, "Sesión iniciada en otro equipo, espere o cierre sesión", "")
 				return
 			}
-			admin.TipoUsuario = "A"
+			admin.TipoUsuario = "admin" // <--- CAMBIO AQUÍ
 			accessToken, refreshToken, refreshExp, err := generarTokens(admin.IDUsuario, admin.TipoUsuario, admin.Correo)
 			if err != nil {
 				writeErrorResponse1(w, http.StatusInternalServerError, "Error generando tokens", err.Error())
@@ -230,8 +232,6 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 			writeSuccessResponse1(w, "Login exitoso (admin)", map[string]interface{}{
 				"admin":        admin,
 				"access_token": accessToken,
-				// Si quieres devolver refresh_token, puedes agregarlo aquí
-				// "refresh_token": refreshToken,
 			})
 			return
 		} else if err != nil {
@@ -239,6 +239,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 			return
 		}
 
+		// --- CLIENTE LOGIN ---
 		if !verificarContraseña(u.Clave, req.Clave) {
 			writeErrorResponse1(w, http.StatusUnauthorized, "Usuario o contraseña incorrectos", "")
 			return
@@ -249,7 +250,7 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 			return
 		}
 		u.Clave = ""
-		tipoUsuario = "C"
+		tipoUsuario = "cliente" // <--- CAMBIO AQUÍ
 
 		activo, err := sesionActivaReciente(dbc, u.IDUsuario)
 		if err != nil {
@@ -313,8 +314,6 @@ func LoginUsuario(dbc *db.DBConnection) http.HandlerFunc {
 			"usuario":      u,
 			"tienda":       tienda,
 			"access_token": accessToken,
-			// Si quieres devolver refresh_token, puedes agregarlo aquí
-			// "refresh_token": refreshToken,
 		})
 	}
 }
