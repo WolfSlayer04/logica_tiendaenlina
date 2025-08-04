@@ -493,14 +493,14 @@ func RegistroUsuarioTienda(dbc *db.DBConnection) http.HandlerFunc {
 				correo = c
 			}
 		}
-		accessToken, refreshToken, err := generarTokens(int(idUsuario), tipoUsuario, correo)
+		accessToken, refreshToken, refreshExp, err := generarTokens(int(idUsuario), tipoUsuario, correo)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, "Error generando tokens", err.Error())
 			return
 		}
 		userAgent := r.Header.Get("User-Agent")
 		ip := r.RemoteAddr
-		err = guardarRefreshToken(dbc, int(idUsuario), tipoUsuario, refreshToken, userAgent, ip)
+		err = guardarRefreshToken(dbc, int(idUsuario), tipoUsuario, refreshToken, userAgent, ip, refreshExp)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, "Error guardando refresh token", err.Error())
 			return

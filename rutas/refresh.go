@@ -5,16 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
-
 	"github.com/WolfSlayer04/logica_tiendaenlina/db"
 	"golang.org/x/crypto/bcrypt"
 )
 
+// Define la estructura para el request de refresh
 type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
-
-// Genera Access y Refresh Token usando zona horaria de Yucatán
 
 // Valida refresh token
 func validarRefreshToken(dbc *db.DBConnection, refreshToken string) (tokenID int, userID int, tipoUsuario, correo string, err error) {
@@ -111,7 +109,7 @@ func RefreshTokenEndpoint(dbc *db.DBConnection) http.HandlerFunc {
 		nowStr := now.Format("2006-01-02 15:04:05")
 		midnightStr := midnight.Format("2006-01-02 15:04:05")
 
-		accessToken, newRefreshToken, err := generarTokens(userID, tipoUsuario, correo)
+		accessToken, newRefreshToken, _, err := generarTokens(userID, tipoUsuario, correo)
 		if err != nil {
 			writeErrorResponse1(w, http.StatusInternalServerError, "Error generando tokens", err.Error())
 			return
