@@ -29,11 +29,9 @@ const (
 // Middleware JWT para rutas protegidas
 func JWTAuthMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // IMPORTANTE: Siempre incluir el header de CORS
         w.Header().Set("Access-Control-Allow-Origin", "*")
-        w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization")
+        w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Tipo-Usuario")
         w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        // Si es método OPTIONS, responder 200 y terminar (preflight CORS)
         if r.Method == http.MethodOptions {
             w.WriteHeader(http.StatusOK)
             return
@@ -55,18 +53,15 @@ func JWTAuthMiddleware(next http.Handler) http.Handler {
             return
         }
 
-        // Puedes hacer validaciones extra, por ejemplo, tipo de usuario
         if claims.Tipo != "C" && claims.Tipo != "A" {
             http.Error(w, "Tipo de usuario no permitido", http.StatusForbidden)
             return
         }
 
-        // Añade datos al contexto para usarlos en el handler
         ctx := context.WithValue(r.Context(), ContextUserIDKey, claims.ID)
         ctx = context.WithValue(ctx, ContextTipoKey, claims.Tipo)
         ctx = context.WithValue(ctx, ContextCorreoKey, claims.Correo)
 
-        // Llama al siguiente handler
         next.ServeHTTP(w, r.WithContext(ctx))
     })
 }
