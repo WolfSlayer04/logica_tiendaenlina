@@ -51,6 +51,8 @@ func setupRoutes(r *mux.Router, dbConn *db.DBConnection) {
 	r.HandleFunc("/api/login", rutas.LoginUsuario(dbConn)).Methods("POST")
 	r.HandleFunc("/api/empresa/logo", rutas.EmpresaGetLogo(dbConn)).Methods("GET")
 	r.HandleFunc("/api/refresh", rutas.RefreshTokenEndpoint(dbConn)).Methods("POST")
+	r.Handle("/api/admin/personalizar", rutas.AdminGetAllPersonalizaciones(dbConn)).Methods("GET")
+	r.Handle("/api/admin/personalizar/{id}",rutas.AdminGetPersonalizacionByID(dbConn)).Methods("GET")
 
 	// Protegidas con JWT
 	r.Handle("/api/categorias", middlewares.JWTAuthMiddleware(http.HandlerFunc(rutas.GetCategorias(dbConn)))).Methods("GET")
@@ -119,8 +121,7 @@ func setupRoutes(r *mux.Router, dbConn *db.DBConnection) {
 	r.Handle("/api/admin/personalizar", middlewares.JWTAuthMiddleware(middlewares.RequireAdminPermisos(http.HandlerFunc(rutas.AdminCreatePersonalizacion(dbConn))))).Methods("POST")
 	r.Handle("/api/admin/personalizar/{id}", middlewares.JWTAuthMiddleware(middlewares.RequireAdminPermisos(http.HandlerFunc(rutas.AdminUpdatePersonalizacionByID(dbConn))))).Methods("PUT")
 	r.Handle("/api/admin/personalizar/{id}", middlewares.JWTAuthMiddleware(middlewares.RequireAdminPermisos(http.HandlerFunc(rutas.AdminDeletePersonalizacionByID(dbConn))))).Methods("DELETE")
-	r.Handle("/api/admin/personalizar", middlewares.JWTAuthMiddleware(middlewares.RequireAdminPermisos(http.HandlerFunc(rutas.AdminGetAllPersonalizaciones(dbConn))))).Methods("GET")
-	r.Handle("/api/admin/personalizar/{id}", middlewares.JWTAuthMiddleware(middlewares.RequireAdminPermisos(http.HandlerFunc(rutas.AdminGetPersonalizacionByID(dbConn))))).Methods("GET")
+	
 
 	// Logo empresa edición (solo admin)
 	r.Handle("/api/empresa/logo", middlewares.JWTAuthMiddleware(middlewares.RequireAdminPermisos(http.HandlerFunc(rutas.EmpresaUploadLogo(dbConn))))).Methods("POST")
